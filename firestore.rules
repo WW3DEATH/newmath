@@ -1,0 +1,259 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Primitives
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerified() && request.auth.token.email == 'mnmjaasim@gmail.com';
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'role', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'role', 'gradeLevel', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.uid == userId
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.role is string && data.role in ['student', 'admin']
+        && (!('gradeLevel' in data) || (data.gradeLevel is string && data.gradeLevel.size() >= 1 && data.gradeLevel.size() <= 40))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMathsDoubt(data, doubtId) {
+      return data.keys().hasAll([
+          'id',
+          'studentUid',
+          'studentName',
+          'title',
+          'question',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'studentUid',
+          'studentName',
+          'title',
+          'question',
+          'status',
+          'zoomSessionId',
+          'zoomJoinUrl',
+          'zoomScheduledFor',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.id == doubtId
+        && isValidId(data.studentUid)
+        && data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 80
+        && data.title is string && data.title.size() >= 3 && data.title.size() <= 140
+        && data.question is string && data.question.size() >= 5 && data.question.size() <= 2500
+        && data.status is string && data.status in ['open', 'scheduled', 'resolved']
+        && (!('zoomSessionId' in data) || (data.zoomSessionId is string && data.zoomSessionId.size() <= 128))
+        && (!('zoomJoinUrl' in data) || (data.zoomJoinUrl is string && data.zoomJoinUrl.size() <= 300 && (data.zoomJoinUrl.size() == 0 || data.zoomJoinUrl.matches('^https://.*'))))
+        && (!('zoomScheduledFor' in data) || (data.zoomScheduledFor is string && data.zoomScheduledFor.size() <= 40))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidZoomSession(data, sessionId) {
+      return data.keys().hasAll([
+          'id',
+          'title',
+          'zoomLink',
+          'scheduledAtIso',
+          'durationMinutes',
+          'audience',
+          'status',
+          'createdByUid',
+          'tutorName',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'title',
+          'zoomLink',
+          'meetingId',
+          'passcode',
+          'scheduledAtIso',
+          'durationMinutes',
+          'audience',
+          'doubtCount',
+          'notes',
+          'status',
+          'createdByUid',
+          'tutorName',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.id == sessionId
+        && data.title is string && data.title.size() >= 3 && data.title.size() <= 140
+        && data.zoomLink is string && data.zoomLink.size() >= 10 && data.zoomLink.size() <= 300 && data.zoomLink.matches('^https://.*')
+        && (!('meetingId' in data) || (data.meetingId is string && data.meetingId.size() <= 40))
+        && (!('passcode' in data) || (data.passcode is string && data.passcode.size() <= 40))
+        && data.scheduledAtIso is string && data.scheduledAtIso.size() >= 10 && data.scheduledAtIso.size() <= 40
+        && data.durationMinutes is number && data.durationMinutes >= 15 && data.durationMinutes <= 180
+        && data.audience is string && data.audience == 'all'
+        && (!('doubtCount' in data) || (data.doubtCount is number && data.doubtCount >= 0 && data.doubtCount <= 500))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000))
+        && data.status is string && data.status in ['scheduled', 'live', 'completed', 'cancelled']
+        && isValidId(data.createdByUid)
+        && data.tutorName is string && data.tutorName.size() >= 2 && data.tutorName.size() <= 80
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // 4. Collection Match Blocks
+
+    // Users (PII-isolated: owner or verified admin only)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
+
+      allow create: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (incoming().role == 'student' || (isAdmin() && incoming().role == 'admin'));
+
+      allow update: if isVerified()
+        && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'gradeLevel', 'role', 'updatedAt'])) ||
+          (isOwner(userId) && incoming().role == existing().role && incoming().email == existing().email && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'gradeLevel', 'updatedAt']))
+        );
+
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // Topic-Free O/L Maths Doubts (Queued for Live Bulk Zoom Sessions)
+    match /doubts/{doubtId} {
+      allow get: if isValidId(doubtId) && isSignedIn() && (isAdmin() || existing().studentUid == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || resource.data.studentUid == request.auth.uid);
+
+      allow create: if isVerified()
+        && isValidId(doubtId)
+        && isValidMathsDoubt(incoming(), doubtId)
+        && incoming().studentUid == request.auth.uid
+        && incoming().status == 'open'
+        && !('zoomSessionId' in incoming())
+        && !('zoomJoinUrl' in incoming())
+        && !('zoomScheduledFor' in incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerified()
+        && isValidId(doubtId)
+        && isValidMathsDoubt(incoming(), doubtId)
+        && incoming().id == existing().id
+        && incoming().studentUid == existing().studentUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Tier 1: Tutor Admin can bulk-assign doubts to a Zoom session or mark discussed/open
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'status',
+            'zoomSessionId',
+            'zoomJoinUrl',
+            'zoomScheduledFor',
+            'updatedAt'
+          ])) ||
+          // Tier 2a: Student owner can edit their question while still open
+          (isOwner(existing().studentUid)
+            && existing().status == 'open'
+            && incoming().status == 'open'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'question', 'updatedAt'])) ||
+          // Tier 2b: Student owner can mark a non-resolved doubt as resolved
+          (isOwner(existing().studentUid)
+            && existing().status != 'resolved'
+            && incoming().status == 'resolved'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+        );
+
+      allow delete: if isValidId(doubtId) && (isAdmin() || (isVerified() && isOwner(existing().studentUid) && existing().status == 'open'));
+    }
+
+    // Free Group Zoom Sessions (Scheduled Anytime by Admin for All Signed-In Students)
+    match /zoomSessions/{sessionId} {
+      allow get: if isValidId(sessionId) && isSignedIn() && (
+        isAdmin() ||
+        existing().audience == 'all'
+      );
+
+      allow list: if isSignedIn() && (
+        isAdmin() ||
+        resource.data.audience == 'all'
+      );
+
+      allow create: if isAdmin()
+        && isValidId(sessionId)
+        && isValidZoomSession(incoming(), sessionId)
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isAdmin()
+        && isValidId(sessionId)
+        && isValidZoomSession(incoming(), sessionId)
+        && incoming().id == existing().id
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'title',
+          'zoomLink',
+          'meetingId',
+          'passcode',
+          'scheduledAtIso',
+          'durationMinutes',
+          'audience',
+          'doubtCount',
+          'notes',
+          'status',
+          'updatedAt'
+        ]);
+
+      allow delete: if isValidId(sessionId) && isAdmin();
+    }
+  }
+}

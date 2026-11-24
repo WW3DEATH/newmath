@@ -1,0 +1,6 @@
+{
+  "name": "OpenMaths OL",
+  "description": "Free, open-source O/L Mathematics student doubt-clearing portal where students submit any maths doubt without topic limits and discuss questions together in scheduled group Zoom sessions synced with Google Calendar.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
